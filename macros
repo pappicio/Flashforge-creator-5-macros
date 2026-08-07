@@ -1,70 +1,3 @@
-[gcode_macro CANCEL_PRINT]
-description: Annulla la stampa corrente con abbassamento piatto, raffreddamento e deposito tool
-rename_existing: CANCEL_PRINT_BASE
-gcode:
-    ##### Parametri client / Mainsail / Fluidd #####
-    {% set client = printer['gcode_macro _CLIENT_VARIABLE']|default({}) %}
-    {% set allow_park = client.park_at_cancel|default(false)|lower == 'true' %}
-    {% set retract = client.cancel_retract|default(5.0)|abs %}
-
-    # Ripristina l idle timeout se era in pausa
-    {% if printer['gcode_macro RESUME'].restore_idle_timeout|default(0) > 0 %}
-        SET_IDLE_TIMEOUT TIMEOUT={printer['gcode_macro RESUME'].restore_idle_timeout}
-    {% endif %}
-
-    # 1. Retrazione iniziale del filamento per evitare oozing
-    _CLIENT_RETRACT LENGTH={retract}
-
-    # 2. Abbassa SEMPRE il piatto di 10mm (sblocca Z con posizione fittizia se non homato)
-    {% if "z" not in printer.toolhead.homed_axes %}
-        M118 Asse Z non homato: imposto posizione temporanea per movimento di sicurezza...
-        SET_KINEMATIC_POSITION Z=0
-    {% endif %}
-    M118 Abbasso il piatto di 10mm per sicurezza...
-    G91
-    G1 Z10 F600
-    G90
-
-    # 3. Spegne riscaldatori e ventola (l hotend comincia a raffreddarsi)
-    TURN_OFF_HEATERS
-    M106 S0
-
-    # 4. Rileva se c e un utensile agganciato al carrello
-    {% set grab = [
-        printer["gcode_button extruder_grab1"].state,
-        printer["gcode_button extruder_grab2"].state,
-        printer["gcode_button extruder_grab3"].state,
-        printer["gcode_button extruder_grab4"].state
-    ] %}
-    {% set ns = namespace(mounted=false) %}
-    {% for state in grab %}
-        {% if state == "PRESSED" %}
-            {% set ns.mounted = true %}
-        {% endif %}
-    {% endfor %}
-
-    # 5. Se l utensile e montato, attende i 140C prima di andare in dock
-    {% if ns.mounted %}
-        {% set current_extruder = printer.toolhead.extruder %}
-        M118 Stampa annullata. Attendo raffreddamento {current_extruder} a 140C...
-        TEMPERATURE_WAIT SENSOR={current_extruder} MAXIMUM=140
-        M118 Temperatura raggiunta (<=140C). Deposito utensile in corso...
-        DEPOSITA_TOOL
-    {% else %}
-        M118 Nessun utensile montato sul carrello.
-    {% endif %}
-
-    # 6. Disattiva i motori
-    M84
-
-    # Pulizia variabili e ripristino stato client Mainsail/Fluidd
-    {client.user_cancel_macro|default("")}
-    SET_GCODE_VARIABLE MACRO=RESUME VARIABLE=idle_state VALUE=False
-    SET_PAUSE_NEXT_LAYER ENABLE=0
-    SET_PAUSE_AT_LAYER ENABLE=0 LAYER=0
-    CANCEL_PRINT_BASE
-
-
 
 ##############################################################################
 
@@ -91,6 +24,8 @@ default_type: command
 ### z_hop: 10
 ### z_hop_speed: 3
 ### move_to_previous: False
+
+
 
 [homing_override]
 axes: xyz
@@ -136,7 +71,10 @@ gcode:
         G28 X Y
         M118 Spostamento a X130 Y130 prima del deposito...
         G1 X130 Y130 F12000
-        DEPOSITA_TOOL
+        
+        # Chiama direttamente l'helper fisico (MAI la macro pubblica DEPOSITA_TOOL)
+        _DEPOSITA_TOOL_FISICO
+        
         M118 Carrello vuoto. Ritorno a X130 Y130...
         G1 X130 Y130 F12000
         M118 Eseguo Home Z dopo aver depositato...
@@ -179,6 +117,7 @@ gcode:
             {% endif %}
         {% endif %}
     {% endif %}
+
 
 ###########################################################################################
 
@@ -334,8 +273,7 @@ gcode:
 ###########################################################################################
 
 
-[gcode_macro DEPOSITA_TOOL]
-description: Deposita l utensile attualmente montato, auto-rilevato dai sensori grab
+[gcode_macro _DEPOSITA_TOOL_FISICO]
 gcode:
     {% set F_NORMAL = 2400 %}
     {% set F_AGGANCIO = 1200 %}
@@ -355,19 +293,13 @@ gcode:
     {% endfor %}
 
     {% if ns.mounted|length == 0 %}
-        M118 Nessun tool montato, niente da depositare.
+        M118 Nessun tool da depositare.
     {% elif ns.mounted|length > 1 %}
-        { action_raise_error("ABORTITO: piu di un sensore grab PRESSED contemporaneamente, stato anomalo") }
+        { action_raise_error("ABORTITO: piu di un sensore grab PRESSED contemporaneamente") }
     {% else %}
         {% set TOOL = ns.mounted[0] %}
-        
-        # Verifica Homing assi XY
-        {% if 'x' not in printer.toolhead.homed_axes or 'y' not in printer.toolhead.homed_axes %}
-            M118 Assi XY non homati, eseguo G28 X Y prima di procedere...
-            G28 X Y
-        {% endif %}
 
-        M118 Deposito Tool {TOOL} in corso...
+        M118 Deposito fisico Tool {TOOL} in corso...
         G90
         G1 X250 F{F_NORMAL}
         M400
@@ -377,14 +309,27 @@ gcode:
         G1 X295 F{F_AGGANCIO}
         M400
         
-        # Sblocco meccanico utensile dal carrello
+        # Sblocco meccanico
         STEPPER_UNLOCK
         M400
         
         G1 X250 F{F_NORMAL}
         M400
-        M118 Tool {TOOL} depositato.
+        M118 Tool {TOOL} depositato con successo.
     {% endif %}
+
+[gcode_macro DEPOSITA_TOOL]
+description: Deposita l utensile attualmente montato
+gcode:
+    {% if 'x' not in printer.toolhead.homed_axes or 'y' not in printer.toolhead.homed_axes %}
+        M118 Macchina non homata: avvio G28 (l homing_override depositera il tool automaticamente)...
+        G28
+    {% else %}
+        M118 Macchina gia homata: eseguo deposito diretto...
+        _DEPOSITA_TOOL_FISICO
+    {% endif %}
+
+
 
 
 ###########################################################################################
