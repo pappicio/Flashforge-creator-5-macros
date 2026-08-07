@@ -335,7 +335,7 @@ gcode:
 
 
 [gcode_macro DEPOSITA_TOOL]
-description: Deposita l'utensile attualmente montato, auto-rilevato dai sensori grab
+description: Deposita l utensile attualmente montato, auto-rilevato dai sensori grab
 gcode:
     {% set F_NORMAL = 2400 %}
     {% set F_AGGANCIO = 1200 %}
@@ -357,7 +357,7 @@ gcode:
     {% if ns.mounted|length == 0 %}
         M118 Nessun tool montato, niente da depositare.
     {% elif ns.mounted|length > 1 %}
-        {{ action_raise_error("ABORTITO: piu' di un sensore grab PRESSED contemporaneamente, stato anomalo") }}
+        { action_raise_error("ABORTITO: piu di un sensore grab PRESSED contemporaneamente, stato anomalo") }
     {% else %}
         {% set TOOL = ns.mounted[0] %}
         
@@ -367,7 +367,7 @@ gcode:
             G28 X Y
         {% endif %}
 
-        M118 Deposito Tool {{ TOOL }} in corso...
+        M118 Deposito Tool {TOOL} in corso...
         G90
         G1 X250 F{F_NORMAL}
         M400
@@ -383,8 +383,9 @@ gcode:
         
         G1 X250 F{F_NORMAL}
         M400
-        M118 Tool {{ TOOL }} depositato.
+        M118 Tool {TOOL} depositato.
     {% endif %}
+
 
 ###########################################################################################
 ### come usarla: PRELEVA_TOOL T=1
