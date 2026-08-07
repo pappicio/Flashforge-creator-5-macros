@@ -14,5 +14,7 @@ Load saved mesh calibration at start print, so you'll need onyl to save them for
 
 and at print start, it recall the right saved mesh based on bed target temp.
 
+
 CALCEL PRINT:
+
 Now, when you call a cancel print, the relative macro, stops heathng bed and hothends, wait until mounted hothend reach 140 degree and leave it on its plate, and at end disable all steppers.
