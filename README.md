@@ -13,3 +13,6 @@ and other some protection agants broken hothend on bed!
 Load saved mesh calibration at start print, so you'll need onyl to save them for different bed temperatures, (macro saves mesh calld "50" for a bed that is from 50 to 59 degree, 60 for bed from 60 to 69 °C)
 
 and at print start, it recall the right saved mesh based on bed target temp.
+
+CALCEL PRINT:
+Now, when you call a cancel print, the relative macro, stops heathng bed and hothends, wait until mounted hothend reach 140 degree and leave it on its plate, and at end disable all steppers.
