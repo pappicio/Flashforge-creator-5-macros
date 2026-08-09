@@ -1,0 +1,16 @@
+{
+   "ex0_diameter" : "0.4mm",
+   "ex0_filament_color" : 23,
+   "ex0_filament_type" : 1,
+   "ex1_diameter" : "0.4mm",
+   "ex1_filament_color" : 22,
+   "ex1_filament_type" : 1,
+   "ex2_diameter" : "0.4mm",
+   "ex2_filament_color" : 4,
+   "ex2_filament_type" : 1,
+   "ex3_diameter" : "0.4mm",
+   "ex3_filament_color" : 1,
+   "ex3_filament_type" : 1
+}
+/* Printer Filament Config                            vector<uint32_t> g_mapFilamentColor = {                            0xFFFFFF,0xFEF043,0xDCF478,0x0ACC38,0x067749,                            0x0C6283,0x0DE2A0,0x75D9F3,0x45A8F9,0x2750E0,                            0x46328E,0xA03CF7,0xF330F9,0xD4B0DC,0xF95D73,                            0xF72224,0x7C4B00,0xF98D33,0xFDEBD5,0xD3C4A3,                            0xAF7836,0x898989,0xBCBCBC,0x161616                        }*/
+
