@@ -2,6 +2,8 @@
 
 # REQUIRED: Jailbreak!
 
+# important: import [homing_ovveride] and comment [safe_z_home] before use tool macros.
+
 Some macros to optimize creator 5 3d Printer
 
 example: safe home, if you send a G28 command, and a hothend is mounted, now, the Creator make XY home, then leave the hothend on its plate,and only after, make also Z home, on original, the hothend crashed on bed if you sent G28 command from mainsail
