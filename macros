@@ -120,6 +120,27 @@ gcode:
 
 
 ###########################################################################################
+##########################################################
+
+[gcode_macro END_PRINT]
+gcode:
+    # 1. Calcola la quota Z sicura
+    {% set max_z = printer.toolhead.axis_maximum.z|float %}
+    {% set act_z = printer.toolhead.position.z|float %}
+    {% if act_z < (max_z - 10.0) %}
+        {% set z_safe = 10.0 %}
+    {% else %}
+        {% set z_safe = max_z - act_z %}
+    {% endif %}
+
+    # 2. Retrazione e movimento Z dinamico
+    G91
+    G1 E-1.2 Z{z_safe} F3000   ; Abbassa il piatto di 10mm O solo dello spazio rimasto
+    G90
+
+    # 3. Park X/Y e Spegnimento completo
+    G1 X150 Y150 F12000        ; Spostamento rapido di park
+##########################################################
 
 # ====================================================================
 # 1. Override che neutralizza la scansione automatica Flashforge
@@ -129,23 +150,13 @@ rename_existing: REAL_BED_MESH_CALIBRATE
 gcode:
     M118 Intercettato comando Flashforge: livellamento ignorato. Uso mesh pre-salvata.
 
-###########################################################################################
-### PER USARLA IN AUTOMATICO DA SLICER; alla fine dello start gcode, aggiungere:
-### CARICA_MESH_TEMPERATURA
-### basta, cosi fatte le sue calibrazioni, la home ecc, carica la mesh idonea, e se nn la trova, va in errore (mostra errore in rosso su console mainsail)
-### e dovrete creare una mesh atta a quelal TEMP del piatto!!!
-### riavviate la stampa e sta volta carica mesh e avvia stampa!
-
-
-### se volete caricare una mesh adattata alle varie temperature, esempio da 60 a 69, o da 70 a 79, dovrete prima eseguire una mesh con macro:
-### SALVA_MESH_TEMPERATURA B=70 (B=60, B=80 ecc....)
 
 # ====================================================================
 # Macro per il caricamento dinamico della mesh con controllo di sicurezza
 # ====================================================================
 [gcode_macro CARICA_MESH_TEMPERATURA]
 gcode:
-    {% set BED_TEMP = printer.heater_bed.target|float %}
+    {% set BED_TEMP = params.BED|default(printer.heater_bed.target)|float %}
 
     # 1. Determinazione del nome profilo target
     {% if BED_TEMP >= 110 %}
@@ -174,13 +185,28 @@ gcode:
         M118 Caricamento mesh salvata per profilo {MESH_TARGET} (Target: {BED_TEMP}C)
         BED_MESH_PROFILE LOAD={MESH_TARGET}
     {% else %}
-        M118 !!! ERRORE MESH MISSING !!! Profilo '{MESH_TARGET}' non trovato su disco.
-        M118 Esegui prima: SALVA_MESH_TEMPERATURA B={BED_TEMP|int}
+        M118 ====================================================
+        M118 !!! MESH {MESH_TARGET} NON PRESENTE SU DISCO !!!
+        M118 Annullamento stampa e avvio calibrazione automatica...
+        M118 ====================================================
+
+        # 1. Annulla la stampa attiva
         CANCEL_PRINT
-        { action_raise_error("Stampa annullata: profilazione mesh assente per " ~ MESH_TARGET ~ "C") }
+
+        # 2. Mantiene il piatto in temperatura target per la profilazione
+        M140 S{BED_TEMP}
+
+        # 3. Deposita l'utensile nel dock
+        DEPOSITA_TOOL
+
+        # 4. Avvia la profilazione e il SAVE_CONFIG
+        SALVA_MESH_TEMPERATURA B={BED_TEMP|int}
+
+        # 5. Sblocca i motori prima di lanciare la nuova procedura
+        DISABILITA_MOTORI
     {% endif %}
 
-###########################################################################################
+
 
 [gcode_macro SALVA_MESH_TEMPERATURA]
 description: Verifica la sicurezza degli utensili e avvia la calibrazione della mesh
@@ -235,10 +261,10 @@ gcode:
     {% else %}
         # 4. Procedura MESH (Tutti e 4 a deposito)
         M118 Carrello libero e tutti i 4 tool in sede. Avvio procedura MESH...
-        
+
         {% set B_PARAM = params.B|default(printer.heater_bed.target)|float %}
         {% set TARGET_TEMP = 60.0 if B_PARAM == 0 else B_PARAM %}
-        
+
         {% if TARGET_TEMP >= 110 %}
             {% set mesh = "110" %}
         {% elif TARGET_TEMP >= 100 %}
@@ -256,7 +282,7 @@ gcode:
         {% else %}
             {% set mesh = "40" %}
         {% endif %}
-        
+
         M118 Riscaldamento piatto a {TARGET_TEMP}C per profilo {mesh}...
         M140 S{TARGET_TEMP}
         M190 S{TARGET_TEMP}
@@ -266,17 +292,102 @@ gcode:
         REAL_BED_MESH_CALIBRATE
         BED_MESH_PROFILE SAVE={mesh}
         BED_MESH_PROFILE LOAD={mesh}
-        M118 Mesh {mesh} salvata! Salvataggio configurazione in corso...
-        SAVE_CONFIG
+        M118 Mesh {mesh} salvata! Salvataggio configurazione e riavvio in corso...
+        SAVE_AND_REBOOT
     {% endif %}
 
-###########################################################################################
+
+[gcode_macro DUMP_VARS]
+description: Stampa TUTTE le variabili e gli oggetti presenti in Klipper
+gcode:
+    {% set ns = namespace(path=[]) %}
+    {% for item in printer %}
+        {% if ' ' in item %}
+            {% set ns.path = ['printer', "['%s']" % (item)] %}
+        {% else %}
+            {% set ns.path = ['printer.', item] %}
+        {% endif %}
+        {% if printer[item] is mapping %}
+            {% for childkey, child in printer[item].items() recursive %}
+                {% set ns.path = ns.path[:loop.depth|int] %}
+                {% if ' ' in childkey %}
+                    {% set null = ns.path.append("['%s']" % (childkey)) %}
+                {% else %}
+                    {% set null = ns.path.append(".%s" % (childkey)) %}
+                {% endif %}
+                {% if child is mapping %}
+                    { loop(child.items()) }
+                {% else %}
+                    { action_respond_info("%s : %s" % (ns.path|join, child)) }
+                {% endif %}
+            {% endfor %}
+        {% else %}
+            { action_respond_info("%s : %s" % (ns.path|join, printer[item])) }
+        {% endif %}
+    {% endfor %}
+
+
+[gcode_macro TEST_TOOL_SAFETY]
+description: Test visivo in console per lo stato dei sensori dei tool
+gcode:
+    # 1. Lettura dello stato dei sensori
+    {% set grab = [
+        printer["gcode_button extruder_grab1"].state,
+        printer["gcode_button extruder_grab2"].state,
+        printer["gcode_button extruder_grab3"].state,
+        printer["gcode_button extruder_grab4"].state
+    ] %}
+
+    {% set pos = [
+        printer["gcode_button extruder_pos1"].state,
+        printer["gcode_button extruder_pos2"].state,
+        printer["gcode_button extruder_pos3"].state,
+        printer["gcode_button extruder_pos4"].state
+    ] %}
+
+    M118 ====================================
+    M118 --- REPORT SICUREZZA UTENSILI ---
+    M118 ====================================
+
+    {% set ns = namespace(errors=0, mounted=0) %}
+
+    # Loop di controllo sui 4 utensili
+    {% for i in range(4) %}
+        {% set t_num = i + 1 %}
+        {% set p = pos[i] %}
+        {% set g = grab[i] %}
+
+        {% if p == "PRESSED" and g == "RELEASED" %}
+            M118 Tool {t_num}: [ OK ] -> Correttamente A DEPOSITO (POS: PRESSED | GRAB: RELEASED)
+        {% elif p == "RELEASED" and g == "PRESSED" %}
+            {% set ns.mounted = ns.mounted + 1 %}
+            M118 Tool {t_num}: [ CARRELLO ] -> Montato sul MOTORE (POS: RELEASED | GRAB: PRESSED)
+        {% elif p == "RELEASED" and g == "RELEASED" %}
+            {% set ns.errors = ns.errors + 1 %}
+            M118 Tool {t_num}: [ ALLARME ] -> PENZOLANTE / FUORI SEDE! (POS: RELEASED | GRAB: RELEASED)
+        {% else %}
+            M118 Tool {t_num}: [ TRANSIZIONE ] -> In movimento / Aggancio (POS: PRESSED | GRAB: PRESSED)
+        {% endif %}
+    {% endfor %}
+
+    M118 ------------------------------------
+
+    # Risultato finale per G28 / Mesh
+    {% if ns.mounted > 0 %}
+        M118 ESITO: [ BLOCCATO ] -> Almeno un utensile e ancora montato sul carrello.
+    {% elif ns.errors > 0 %}
+        M118 ESITO: [ ALLARME BLOCCANTE ] -> Almeno un utensile risulta staccato ma non al deposito!
+    {% else %}
+        M118 ESITO: [ OK PASS ] -> Tutti i 4 utensili a deposito. G28 / Mesh AUTORIZZATI!
+    {% endif %}
+    M118 ====================================
+
 
 
 [gcode_macro _DEPOSITA_TOOL_FISICO]
 gcode:
-    {% set F_NORMAL = 2400 %}
-    {% set F_AGGANCIO = 1200 %}
+    {% set F_NORMAL = 4800 %}
+    {% set F_AGGANCIO = 2400 %}
 
     {% set y_map = {1: 55.813, 2: 105.096, 3: 155.597, 4: 205.296} %}
     {% set grab = [
@@ -308,11 +419,11 @@ gcode:
         M118 Avvicinamento lento a X295...
         G1 X295 F{F_AGGANCIO}
         M400
-        
+
         # Sblocco meccanico
         STEPPER_UNLOCK
         M400
-        
+
         G1 X250 F{F_NORMAL}
         M400
         M118 Tool {TOOL} depositato con successo.
@@ -330,16 +441,11 @@ gcode:
     {% endif %}
 
 
-
-
-###########################################################################################
-### come usarla: PRELEVA_TOOL T=1
-
 [gcode_macro PRELEVA_TOOL]
 description: Preleva il tool N, depositando prima l'eventuale tool gia' montato se diverso
 gcode:
-    {% set F_NORMAL = 2400 %}
-    {% set F_AGGANCIO = 1200 %}
+    {% set F_NORMAL = 4800 %}
+    {% set F_AGGANCIO = 2400 %}
 
     {% set TOOL = params.T|default(0)|int %}
     {% set y_map = {1: 55.813, 2: 105.096, 3: 155.597, 4: 205.296} %}
@@ -385,7 +491,7 @@ gcode:
             M118 Avvicinamento lento a X295...
             G1 X295 F{F_AGGANCIO}
             M400
-            STEPPER_LOCK
+            MOTOR_GRAB
             M400
             MOTOR_GRAB2
             M400
@@ -396,11 +502,199 @@ gcode:
     {% endif %}
 
 
+#################################################################################
+
+
+[gcode_macro LOAD_FILAMENT]
+description: Gestisce il ciclo completo: preleva il tool T (1-4), va a spurgare, retrae e deposita.
+gcode:
+    # ==========================================
+    # PARAMETRI CONFIGURABILI E TUNING
+    # ==========================================
+    {% set TOOL_HUMAN = params.T|default(1)|int %}
+
+    # Parametri di estrusione e ritrazione
+    {% set PURGE_LENGTH = 100.0 %}        # Millimetri di filamento da spurgare
+    {% set PURGE_FEEDRATE = 300 %}       # VelocitÃ  di spurgo (mm/min)
+    {% set RETRACT_LENGTH = -5.0 %}      # Millimetri di ritrazione anti-colatura
+    {% set RETRACT_FEEDRATE = 240 %}     # VelocitÃ  di ritrazione (mm/min)
+
+    # Temperature target
+    {% set TEMP_PURGE = 240 %}           # Temperatura per lo spurgo
+    {% set TEMP_SAFE = 140 %}            # Temperatura di sicurezza prima del deposito
+
+    # Coordinate di spurgo
+    {% set X_SPURGO = 273.000 %}
+    {% set Y_SPURGO = 255.000 %}
+
+    # Coordinate per il raffreddamento sul cuscinetto di silicone
+    {% set X_SILICONE = 266.500 %}
+    {% set Y_SILICONE = 13.800 %}
+    {% set Z_SILICONE = 0.969 %}
+
+    # VelocitÃ  di movimento ridotte per i test (modificabili a regime)
+    {% set SPEED_XY = 4800 %}             # VelocitÃ  traslazione XY (mm/min)
+    #####{% set SPEED_XY = 300 %}             # VelocitÃ  traslazione XY (mm/min)
+
+    {% set SPEED_Z = 600 %}              # VelocitÃ  discesa Z (mm/min)
+
+    # ==========================================
+
+    # Controllo validitÃ  range tool (1-4): se Ã¨ errato scrive un messaggio in console ed esce senza fare nulla
+    {% if TOOL_HUMAN < 1 or TOOL_HUMAN > 4 %}
+        M118 ERRORE: Numero tool non valido! Usa T=1, T=2, T=3 o T=4. Macro abortita.
+    {% else %}
+
+        # Conversione interna per Klipper (da umano 1-4 a indice reale 0-3)
+        {% set TOOL = TOOL_HUMAN - 1 %}
+
+        # 1. Preleva il tool
+        M118 Avvio procedura per Tool {TOOL_HUMAN}...
+        PRELEVA_TOOL T={TOOL_HUMAN}
+
+	# 1.1. Riscaldamento
+        M118 Riscaldamento Tool {TOOL_HUMAN} a {TEMP_PURGE}C per spurgo...
+	M104 S{TEMP_PURGE} T{TOOL}
+
+        # 2. Spostamento in sicurezza alle coordinate di spurgo
+        M118 Posizionamento in sicurezza alle coordinate di spurgo...
+        G90
+        G1 Y{Y_SPURGO} F{SPEED_XY}
+        G1 X{X_SPURGO} F{SPEED_XY}
+        M400
+
+	# 3. aspetto temp e Spurgo
+	M109 S{TEMP_PURGE} T{TOOL}
+        M118 Eseguisco spurgo di {PURGE_LENGTH} mm...
+        G92 E0
+        G1 E{PURGE_LENGTH} F{PURGE_FEEDRATE}
+        M400
+
+        # 4. Ritrazione anti-colatura
+        M118 Eseguo ritrazione di {RETRACT_LENGTH} mm...
+        G92 E0
+        G1 E{RETRACT_LENGTH} F{RETRACT_FEEDRATE}
+        M400
+
+        # 5. Spegnimento immediato riscaldatore e spostamento sul cuscinetto di silicone
+        M118 Spengo riscaldatore e sposto sul cuscinetto di raffreddamento...
+        M104 S0 T{TOOL}
+
+        G90
+        G1 X250.0 F{SPEED_XY}
+        G1 Y{Y_SILICONE} F{SPEED_XY}
+        G1 X{X_SILICONE} F{SPEED_XY}
+        G1 Z{Z_SILICONE} F{SPEED_Z}
+        M400
+
+        # 6. Attesa discesa temperatura a 140Â°C sul cuscinetto
+        M118 Attesa raffreddamento a {TEMP_SAFE}C sul cuscinetto di silicone...
+        TEMPERATURE_WAIT SENSOR="extruder{ '' if TOOL == 0 else TOOL }" MAXIMUM={TEMP_SAFE|float}
+
+        # 7. Sollevamento Z di sicurezza di 10mm per non graffiare il tool prima del deposito
+        M118 Temperatura di sicurezza raggiunta. Sollevo Z di 10mm...
+        G91
+        G1 Z10.0 F{SPEED_Z}
+        G90
+        M400
+
+        # 8. Deposito finale del tool
+        M118 Deposito il Tool {TOOL_HUMAN}...
+        DEPOSITA_TOOL
+
+        M118 Ciclo LOAD_FILAMENT completato con successo!
+
+    {% endif %}
+
+#################################################################################
+
+#################################################################################
+
+
+
 [gcode_macro DISABILITA_MOTORI]
 description: Spegne la coppia dei motori stepper (X, Y, Z ed estrusori) per muoverli a mano
 gcode:
     M400                          # Attende la fine di tutti i movimenti in coda
     M84                           # Spegne tutti i motori stepper
     M118 Motori disabilitati. Carrello libero.
+
+
+
+[gcode_macro SBLOCCA_XY]
+description: Disabilita solo i motori X e Y mantenendo Z bloccato
+gcode:
+    M400
+    SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0
+    SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0
+    # Se hai un secondo motore Y (es. stepper_y1), sblocca anche quello:
+    # SET_STEPPER_ENABLE STEPPER=stepper_y1 ENABLE=0
+    M118 Assi X e Y sbloccati.
+
+
+[gcode_shell_command REBOOT_HOST]
+command: /usr/data/home/pwned/reboot.sh
+timeout: 5
+verbose: True
+
+[gcode_macro REBOOT_PRINTER]
+variable_value: 0
+gcode:
+    RUN_SHELL_COMMAND CMD=REBOOT_HOST
+
+
+
+[gcode_shell_command REBOOT_HOST_CMD]
+command: /usr/data/home/pwned/host_reboot.sh
+timeout: 2
+verbose: True
+
+[gcode_macro SAVE_AND_REBOOT]
+gcode:
+    RUN_SHELL_COMMAND CMD=REBOOT_HOST_CMD
+    SAVE_CONFIG
+
+
+
+# ====================================================================
+# COMANDI SHELL DIRETTI (Senza script esterni .sh)
+# ====================================================================
+
+[gcode_shell_command RESTART_KLIPPER_SHELL]
+command: /bin/sh -c "/usr/prog/klipper/klipperDaemon restart >/dev/null 2>&1 &"
+timeout: 5
+verbose: False
+
+[gcode_shell_command RESTART_MOONRAKER_SHELL]
+command: /bin/sh -c "/usr/prog/klipper/moonrakerDaemon restart >/dev/null 2>&1 &"
+timeout: 5
+verbose: False
+
+# ====================================================================
+# MACRO ATTIVE IN MAINSAIL
+# ====================================================================
+# Timer disattivato all'avvio (duration = 0)
+
+[delayed_gcode LED_AUTO_ON]
+initial_duration: 10.0
+gcode:
+    SET_LED LED=chamber_led WHITE=0.5
+
+# Macro Riavvia Moonraker
+[gcode_macro RIAVVIA_MOONRAKER]
+variable_value: 0
+description: Riavvia il servizio Moonraker
+gcode:
+    RUN_SHELL_COMMAND CMD=RESTART_MOONRAKER_SHELL
+
+# Macro Riavvia Klipper
+[gcode_macro RIAVVIA_KLIPPER]
+variable_value: 0
+description: Riavvia il servizio Klipper
+gcode:
+    RUN_SHELL_COMMAND CMD=RESTART_KLIPPER_SHELL
+
+
+
 
 
