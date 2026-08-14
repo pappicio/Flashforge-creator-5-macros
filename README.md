@@ -16,3 +16,4 @@ Load saved mesh calibration at start print, so you'll need onyl to save them for
 
 and at print start, it recall the right saved mesh based on bed target temp.
 
+# OVVIAMENTE NON mi assumo nessuna responsabilità se l'uso di queste macro causa danni a cose o persone
