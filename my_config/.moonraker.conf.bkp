@@ -1,21 +1,3 @@
-[server]
-host = 0.0.0.0
-port = 7125
-klippy_uds_address = /tmp/uds
-
-[machine]
-provider = none
-validate_service = false
-validate_config = false
-
-[file_manager]
-file_system_observer = none
-
-[authorization]
-enable_api_key = false
-trusted_clients = 
-	0.0.0.0/0
-
 [timelapse]
 frame_path = /tmp/timelapse/
 output_path = /usr/data/firmwareRes/camera/video/
@@ -35,4 +17,22 @@ locked_while_printing = True
 type = klipper_device
 object_name = gcode_macro RIAVVIA_MOONRAKER
 locked_while_printing = True
+
+[server]
+host = 0.0.0.0
+port = 7125
+klippy_uds_address = /tmp/uds
+
+[machine]
+provider = none
+validate_service = false
+validate_config = false
+
+[file_manager]
+file_system_observer = none
+
+[authorization]
+enable_api_key = false
+trusted_clients = 
+	0.0.0.0/0
 
